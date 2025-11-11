@@ -1,0 +1,5 @@
+openai
+python-dotenv
+requests
+numpy
+datasets==2.19.0
