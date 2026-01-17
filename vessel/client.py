@@ -2,7 +2,7 @@
 
 import time
 from openai import OpenAI
-from .resources import Models, Accounts, Embeddings, Chat
+from .resources import Models, Accounts, Embeddings, Chat, Classify
 
 
 class RateLimiter:
@@ -68,4 +68,5 @@ class Vessel:
         self.accounts = Accounts(self._openai_client, base_url)
         self.embeddings = Embeddings(self._openai_client, self._rate_limiter)
         self.chat = Chat(self._openai_client, self._rate_limiter)
+        self.classify = Classify(self._openai_client, self._rate_limiter)
 

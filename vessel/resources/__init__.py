@@ -4,6 +4,7 @@ from .models import Models
 from .accounts import Accounts
 from .embeddings import Embeddings
 from .chat import Chat
+from .classify import Classify
 
-__all__ = ["Models", "Accounts", "Embeddings", "Chat"]
+__all__ = ["Models", "Accounts", "Embeddings", "Chat", "Classify"]
 

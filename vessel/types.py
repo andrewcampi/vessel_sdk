@@ -245,6 +245,36 @@ class ChatCompletionsResponse:
 
 
 @dataclass
+class ClassifyResponse:
+    """Response from the classify.create() endpoint."""
+    success: bool
+    classifications: List[DictLike]  # Each item has is_ai and confidence
+    input_tokens: int
+    throughput: float
+    processing_time: float
+    input_cost: str = "$0.00"
+    output_cost: str = "$0.00"
+    total_cost: str = "$0.00"
+    exact_cost: float = 0.0
+    error: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            'success': self.success,
+            'classifications': [dict(item) for item in self.classifications],
+            'input_tokens': self.input_tokens,
+            'throughput': self.throughput,
+            'processing_time': self.processing_time,
+            'input_cost': self.input_cost,
+            'output_cost': self.output_cost,
+            'total_cost': self.total_cost,
+            'exact_cost': self.exact_cost,
+            'error': self.error
+        }
+
+
+@dataclass
 class BatchStatus:
     """Status information for a batch job."""
     finished: bool
@@ -524,3 +554,129 @@ class EmbeddingsBatchJob:
             error=None
         )
 
+
+class ClassifyBatchJob:
+    """Represents an asynchronous batch job for classification."""
+    
+    def __init__(
+        self,
+        batch_id: str,
+        client: "OpenAI",
+        model: str,
+        input_cost_per_1m: float,
+        num_requests: int
+    ):
+        """Initialize a classification batch job.
+        
+        Args:
+            batch_id: The batch job ID.
+            client: The OpenAI client instance.
+            model: The model name.
+            input_cost_per_1m: Input cost per 1M tokens.
+            num_requests: Number of requests in the batch.
+        """
+        self.id = batch_id
+        self._client = client
+        self._model = model
+        self._input_cost_per_1m = input_cost_per_1m
+        self._num_requests = num_requests
+        self._cached_status: Optional[BatchStatus] = None
+    
+    def poll(self) -> BatchStatus:
+        """Poll the batch job status.
+        
+        Returns:
+            BatchStatus: Current status of the batch job.
+        """
+        import time
+        batch = self._client.batches.retrieve(self.id)
+        finished = batch.status in ["completed", "failed", "cancelled"]
+        self._cached_status = BatchStatus(finished=finished, status=batch.status)
+        return self._cached_status
+    
+    def get(self) -> ClassifyResponse:
+        """Get the results of the batch job.
+        
+        This method blocks until the batch is complete.
+        
+        Returns:
+            ClassifyResponse: The response containing all classifications.
+        """
+        import time
+        
+        # Wait for completion
+        while True:
+            batch = self._client.batches.retrieve(self.id)
+            
+            if batch.status == "completed":
+                break
+            elif batch.status == "failed":
+                error_msg = "Batch processing failed"
+                if hasattr(batch, 'errors') and batch.errors:
+                    error_msg += f": {batch.errors}"
+                return ClassifyResponse(
+                    success=False,
+                    classifications=[],
+                    input_tokens=0,
+                    throughput=0,
+                    processing_time=0,
+                    error=error_msg
+                )
+            elif batch.status == "cancelled":
+                return ClassifyResponse(
+                    success=False,
+                    classifications=[],
+                    input_tokens=0,
+                    throughput=0,
+                    processing_time=0,
+                    error="Batch processing was cancelled"
+                )
+            else:
+                time.sleep(2)
+        
+        # Download results
+        result_file_id = batch.output_file_id
+        result_content = self._client.files.content(result_file_id).content
+        
+        # Parse results
+        results = []
+        for line in result_content.decode('utf-8').strip().split('\n'):
+            if line:
+                results.append(json.loads(line))
+        
+        # Extract classifications
+        classifications_data = []
+        total_tokens = 0
+        for result in results:
+            classification_list = result['response']['body']['classifications']
+            # Should be a single classification per result
+            if classification_list:
+                classifications_data.append(DictLike(classification_list[0]))
+            total_tokens += result['response']['body']['usage']['prompt_tokens']
+        
+        # Calculate metrics
+        processing_time = round(getattr(batch, 'processing_time', 0), 5)
+        throughput = round(total_tokens / processing_time, 5) if processing_time > 0 else 0
+        
+        # Calculate costs (pricing is per 1M tokens)
+        input_cost_value = total_tokens * self._input_cost_per_1m / 1_000_000
+        output_cost_value = 0.0  # Classification doesn't have output tokens
+        exact_cost_value = input_cost_value + output_cost_value
+        
+        # Format costs (total is calculated as rounded input + rounded output)
+        input_cost, output_cost, total_cost = format_costs_together(
+            input_cost_value, output_cost_value
+        )
+        
+        return ClassifyResponse(
+            success=True,
+            classifications=classifications_data,
+            input_tokens=total_tokens,
+            throughput=throughput,
+            processing_time=processing_time,
+            input_cost=input_cost,
+            output_cost=output_cost,
+            total_cost=total_cost,
+            exact_cost=exact_cost_value,
+            error=None
+        )
